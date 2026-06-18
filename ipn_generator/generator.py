@@ -1,6 +1,6 @@
 from plugin import InvenTreePlugin
 from plugin.mixins import EventMixin, SettingsMixin
-from part.models import Part
+from part.models import Part, PartCategoryParameterTemplate
 
 from django.core.exceptions import ValidationError
 
@@ -55,9 +55,20 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
             "validator": bool,
             "default": False,
         },
+        "CATEGORY_AWARE": {
+            "name": "Category Aware",
+            "description": "Generate IPN from the part's category SKU prefix parameter. If disabled, falls back to the PATTERN setting.",
+            "validator": bool,
+            "default": True,
+        },
+        "CATEGORY_PARAMETER_NAME": {
+            "name": "Category Parameter Name",
+            "description": "Name of the InvenTree category parameter that holds the SKU prefix (e.g. 'sku_prefix')",
+            "default": "sku_prefix",
+        },
         "PATTERN": {
             "name": "IPN pattern",
-            "description": "Pattern for IPN generation (See website for guide)",
+            "description": "Pattern for IPN generation, used when Category Aware is disabled (See website for guide)",
             "default": "(IPN-){4}",
             "validator": validate_pattern,
         },
@@ -81,6 +92,51 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
 
         return False
 
+    def _get_sku_prefix(self, part):
+        """Read the SKU prefix from the part's category parameter.
+
+        Returns the prefix string (e.g. 'IC-ADC') or None if not configured.
+        """
+        if not part.category:
+            logger.warning("IPN Generator: Part has no category; skipping IPN generation")
+            return None
+
+        param_name = self.get_setting("CATEGORY_PARAMETER_NAME")
+
+        try:
+            template = PartCategoryParameterTemplate.objects.filter(
+                category=part.category,
+                parameter_template__name=param_name,
+            ).first()
+        except Exception as e:
+            logger.warning(f"IPN Generator: Error querying category parameter '{param_name}': {e}")
+            return None
+
+        if not template or not template.default_value:
+            logger.warning(
+                f"IPN Generator: Category '{part.category.name}' has no '{param_name}' parameter; "
+                "skipping IPN generation. Set this parameter on the category to enable auto-generation."
+            )
+            return None
+
+        return template.default_value.strip()
+
+    def _find_next_sequential(self, prefix):
+        """Return the next zero-padded 4-digit sequence number for the given SKU prefix."""
+        existing = Part.objects.filter(IPN__startswith=f"{prefix}-").values_list("IPN", flat=True)
+
+        max_seq = 0
+        for ipn in existing:
+            suffix = ipn[len(prefix) + 1:]
+            try:
+                seq = int(suffix)
+                if seq > max_seq:
+                    max_seq = seq
+            except ValueError:
+                continue
+
+        return str(max_seq + 1).zfill(4)
+
     def process_event(self, event, *args, **kwargs):
         """Main plugin handler function"""
 
@@ -98,6 +154,15 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
         # Don't create IPNs for parts with IPNs
         part = Part.objects.get(id=id)
         if part.IPN:
+            return
+
+        if self.get_setting("CATEGORY_AWARE"):
+            prefix = self._get_sku_prefix(part)
+            if prefix is None:
+                return
+            seq = self._find_next_sequential(prefix)
+            part.IPN = f"{prefix}-{seq}"
+            part.save()
             return
 
         expression = self.construct_regex(True)

@@ -3,7 +3,7 @@ from django.core.exceptions import ValidationError
 import logging
 
 from django.conf import settings
-from part.models import PartCategory, SupplierPart, Part
+from part.models import PartCategory, SupplierPart, Part, PartCategoryParameterTemplate, PartParameterTemplate
 from company.models import Company
 from common.models import InvenTreeSetting
 
@@ -380,6 +380,70 @@ class IPNGeneratorCombiningTests(TestCase):
 
         part = Part.objects.get(pk=p.pk)
         self.assertEqual(part.IPN, "a26")
+
+
+class IPNGeneratorCategoryAwareTests(TestCase):
+    """Tests for category-parameter-based IPN generation"""
+
+    def setUp(self):
+        setup_func(self)
+        self.plugin.set_setting("CATEGORY_AWARE", True)
+        self.plugin.set_setting("CATEGORY_PARAMETER_NAME", "sku_prefix")
+
+        self.param_template = PartParameterTemplate.objects.create(name="sku_prefix")
+
+        self.cat = PartCategory.objects.create(name="Test Subcategory")
+        PartCategoryParameterTemplate.objects.create(
+            category=self.cat,
+            parameter_template=self.param_template,
+            default_value="IC-ADC",
+        )
+
+        self.cat_no_param = PartCategory.objects.create(name="Unconfigured Category")
+
+    def tearDown(self):
+        teardown_func()
+
+    def test_generates_correct_ipn_from_category_parameter(self):
+        """Category with sku_prefix parameter produces correct IPN"""
+        p = Part.objects.create(category=self.cat, name="TestPart")
+        part = Part.objects.get(pk=p.pk)
+        self.assertEqual(part.IPN, "IC-ADC-0001")
+
+    def test_increments_sequentially(self):
+        """Second part in same category gets next sequential IPN"""
+        Part.objects.create(category=self.cat, name="TestPart1")
+        p = Part.objects.create(category=self.cat, name="TestPart2")
+        part = Part.objects.get(pk=p.pk)
+        self.assertEqual(part.IPN, "IC-ADC-0002")
+
+    def test_picks_up_existing_ipns_when_sequencing(self):
+        """Sequential count is derived from existing matching IPNs in the database"""
+        Part.objects.create(category=self.cat, name="ExistingPart", IPN="IC-ADC-0042")
+        p = Part.objects.create(category=self.cat, name="NewPart")
+        part = Part.objects.get(pk=p.pk)
+        self.assertEqual(part.IPN, "IC-ADC-0043")
+
+    def test_category_without_parameter_skips_ipn(self):
+        """Parts in categories without sku_prefix get no IPN assigned"""
+        p = Part.objects.create(category=self.cat_no_param, name="TestPart")
+        part = Part.objects.get(pk=p.pk)
+        self.assertFalse(part.IPN)
+
+    def test_manual_ipn_not_overwritten(self):
+        """Parts with a manually set IPN are not overwritten"""
+        p = Part.objects.create(category=self.cat, name="TestPart", IPN="MANUAL-001")
+        part = Part.objects.get(pk=p.pk)
+        self.assertEqual(part.IPN, "MANUAL-001")
+
+    def test_category_aware_false_falls_back_to_pattern(self):
+        """When CATEGORY_AWARE is False, pattern-based generation is used instead"""
+        self.plugin.set_setting("CATEGORY_AWARE", False)
+        self.plugin.set_setting("PATTERN", "{4}")
+
+        p = Part.objects.create(category=self.cat, name="TestPart")
+        part = Part.objects.get(pk=p.pk)
+        self.assertEqual(part.IPN, "0001")
 
 
 class IPNGeneratorModelTests(TestCase):
