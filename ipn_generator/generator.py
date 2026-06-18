@@ -1,15 +1,126 @@
 from plugin import InvenTreePlugin
 from plugin.mixins import EventMixin, SettingsMixin
-from part.models import Part, PartCategoryParameterTemplate
+from part.models import Part
 
 from django.core.exceptions import ValidationError
 
+import json
 import logging
 import re
 
 logger = logging.getLogger("inventree")
 
 PERMITTED_SPECIAL_LITERALS = "\-.:/\\"
+
+# Default category-to-code mappings (name → code).
+# Stored as JSON strings so they can be overridden via plugin settings in the UI.
+# Where the original mapping had multiple codes pointing to the same category name
+# (e.g. LDR/LED/PHO all → "Optoelectronics"), only one is kept here as default;
+# edit the PRIMARY_MAPPING setting in InvenTree to add or change entries.
+_DEFAULT_PRIMARY_MAPPING = json.dumps({
+    "Antennas": "ANT",
+    "Batteries": "BAT",
+    "Capacitors": "CAP",
+    "Connectors": "CON",
+    "Diodes": "DIO",
+    "Displays": "DIS",
+    "Electromechanical": "ELM",
+    "Fuses & Protection": "FUS",
+    "Integrated Circuits": "IC",
+    "Inductors": "IND",
+    "Optoelectronics": "LED",
+    "Mechanical & Hardware": "MEC",
+    "Modules": "MOD",
+    "Oscillators": "OSC",
+    "PCBs & Pins": "PCB",
+    "Power Supply": "PWR",
+    "Resistors": "RES",
+    "RF & Wireless": "RF",
+    "Sensors": "SEN",
+    "Transistors": "TRA",
+    "Wires & Cables": "WRE",
+})
+
+_DEFAULT_SECONDARY_MAPPING = json.dumps({
+    "Through Hole": "THL",
+    "Wire & Cable": "WRE",
+    "Surface Mount": "SMD",
+    "Lithium-Ion": "LIIO",
+    "Lithium-Polymer": "LIPO",
+    "Sealed Lead Acid": "SLA",
+    "Kits": "KIT",
+    "Polarized": "POL",
+    "Safety Film": "SFT",
+    "Tantalum": "TAN",
+    "Battery": "BAT",
+    "Panel Mount": "PNL",
+    "Flow Switches": "FLW",
+    "Navigation Switches": "NAV",
+    "Pushbuttons": "PBT",
+    "Potentiometers": "POT",
+    "Rotary Switches": "RSW",
+    "Slide Switches": "SLD",
+    "Valves": "VAL",
+    "Analog-to-Digital": "ADC",
+    "Amplifiers": "AMP",
+    "Battery Chargers": "CHG",
+    "Communications": "COM",
+    "Current Regulators": "CRR",
+    "Digital-to-Analog": "DAC",
+    "Drivers": "DRV",
+    "EEPROM": "EEP",
+    "I/O Expanders": "EXP",
+    "Flash Memory": "FSH",
+    "Inertial Measurement Units": "IMU",
+    "Inverters & Logic": "INV",
+    "Isolators": "ISO",
+    "Magnetic & Hall Effect": "MAG",
+    "Microcontrollers": "MPU",
+    "Multiplexers": "MUX",
+    "NOR Flash": "NOR",
+    "Optocouplers": "OPT",
+    "SRAM": "RAM",
+    "Voltage References": "REF",
+    "SIM Controllers": "SIM",
+    "Switching Controllers": "SWC",
+    "Timers": "TMR",
+    "USB Controllers": "USC",
+    "Enclosures": "BOX",
+    "Electrical Fittings": "ELC",
+    "Fasteners": "FST",
+    "Heatsinks": "HSK",
+    "Waterproofing": "WTP",
+    "Compute Modules": "CMP",
+    "Measurement Modules": "MES",
+    "Solid State Drives": "SSD",
+    "Breakout Boards": "BRKO",
+    "Control Boards": "CTL",
+    "Guide Pins": "GID",
+    "Test Points": "TST",
+    "AC-DC Supplies": "ACD",
+    "DC-DC Converters": "DCD",
+    "Power Relays": "REL",
+    "Transformers": "TRA",
+    "Linear Regulators": "LIN",
+    "Shunt Regulators": "SHU",
+    "Switching Regulators": "SWI",
+    "433MHz": "433",
+    "802.11 & 802.15.4": "802",
+    "Attenuators": "ATN",
+    "Cellular": "GSM",
+    "Mesh Networks": "MSH",
+    "Receivers": "RX",
+    "Transmitters": "TX",
+    "WiFi Modules": "WFI",
+    "Absolute Pressure": "APS",
+    "Environmental": "ENV",
+    "Proximity": "PRX",
+    "Ribbon Cables": "RBN",
+    "Shielded Cables": "SHL",
+    "Heat Shrink": "SHR",
+    "Twisted Pair": "TWS",
+    "Thermistors": "NTC",
+})
 
 
 def validate_pattern(pattern):
@@ -57,14 +168,19 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
         },
         "CATEGORY_AWARE": {
             "name": "Category Aware",
-            "description": "Generate IPN from the part's category SKU prefix parameter. If disabled, falls back to the PATTERN setting.",
+            "description": "Generate IPN from the part's category path. If disabled, falls back to the PATTERN setting.",
             "validator": bool,
             "default": True,
         },
-        "CATEGORY_PARAMETER_NAME": {
-            "name": "Category Parameter Name",
-            "description": "Name of the InvenTree category parameter that holds the SKU prefix (e.g. 'sku_prefix')",
-            "default": "sku_prefix",
+        "PRIMARY_MAPPING": {
+            "name": "Primary Category Mapping",
+            "description": "JSON mapping of top-level category names to SKU codes, e.g. {\"Antennas\": \"ANT\"}",
+            "default": _DEFAULT_PRIMARY_MAPPING,
+        },
+        "SECONDARY_MAPPING": {
+            "name": "Secondary Category Mapping",
+            "description": "JSON mapping of sub-category names to SKU codes, e.g. {\"Surface Mount\": \"SMD\"}",
+            "default": _DEFAULT_SECONDARY_MAPPING,
         },
         "PATTERN": {
             "name": "IPN pattern",
@@ -93,33 +209,53 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
         return False
 
     def _get_sku_prefix(self, part):
-        """Read the SKU prefix from the part's category parameter.
+        """Derive the SKU prefix from the part's category pathstring and the configured mappings.
 
-        Returns the prefix string (e.g. 'IC-ADC') or None if not configured.
+        Reads part.category.pathstring (e.g. 'Antennas/Surface Mount'), splits it into
+        primary and secondary names, and looks each up in the JSON mapping settings.
+        Returns the prefix string (e.g. 'ANT-SMD') or None if the category is unmapped.
         """
         if not part.category:
             logger.warning("IPN Generator: Part has no category; skipping IPN generation")
             return None
 
-        param_name = self.get_setting("CATEGORY_PARAMETER_NAME")
+        pathstring = part.category.pathstring or ""
+        path_parts = [p.strip() for p in pathstring.split("/")]
 
-        try:
-            template = PartCategoryParameterTemplate.objects.filter(
-                category=part.category,
-                parameter_template__name=param_name,
-            ).first()
-        except Exception as e:
-            logger.warning(f"IPN Generator: Error querying category parameter '{param_name}': {e}")
-            return None
-
-        if not template or not template.default_value:
+        if len(path_parts) < 2:
             logger.warning(
-                f"IPN Generator: Category '{part.category.name}' has no '{param_name}' parameter; "
-                "skipping IPN generation. Set this parameter on the category to enable auto-generation."
+                f"IPN Generator: Category '{pathstring}' is a top-level category with no parent; "
+                "skipping IPN generation."
             )
             return None
 
-        return template.default_value.strip()
+        primary_name, secondary_name = path_parts[0], path_parts[1]
+
+        try:
+            primary_map = json.loads(self.get_setting("PRIMARY_MAPPING") or "{}")
+            secondary_map = json.loads(self.get_setting("SECONDARY_MAPPING") or "{}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"IPN Generator: Invalid JSON in mapping settings: {e}")
+            return None
+
+        primary_code = primary_map.get(primary_name)
+        secondary_code = secondary_map.get(secondary_name)
+
+        if not primary_code:
+            logger.warning(
+                f"IPN Generator: No code found for primary category '{primary_name}'; "
+                "add it to the PRIMARY_MAPPING setting."
+            )
+            return None
+
+        if not secondary_code:
+            logger.warning(
+                f"IPN Generator: No code found for sub-category '{secondary_name}'; "
+                "add it to the SECONDARY_MAPPING setting."
+            )
+            return None
+
+        return f"{primary_code}-{secondary_code}"
 
     def _find_next_sequential(self, prefix):
         """Return the next zero-padded 4-digit sequence number for the given SKU prefix."""

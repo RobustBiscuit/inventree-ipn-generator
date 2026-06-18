@@ -3,7 +3,7 @@ from django.core.exceptions import ValidationError
 import logging
 
 from django.conf import settings
-from part.models import PartCategory, SupplierPart, Part, PartCategoryParameterTemplate, PartParameterTemplate
+from part.models import PartCategory, SupplierPart, Part
 from company.models import Company
 from common.models import InvenTreeSetting
 
@@ -383,29 +383,29 @@ class IPNGeneratorCombiningTests(TestCase):
 
 
 class IPNGeneratorCategoryAwareTests(TestCase):
-    """Tests for category-parameter-based IPN generation"""
+    """Tests for pathstring + mapping based IPN generation"""
 
     def setUp(self):
         setup_func(self)
         self.plugin.set_setting("CATEGORY_AWARE", True)
-        self.plugin.set_setting("CATEGORY_PARAMETER_NAME", "sku_prefix")
+        self.plugin.set_setting("PRIMARY_MAPPING", '{"Integrated Circuits": "IC"}')
+        self.plugin.set_setting("SECONDARY_MAPPING", '{"Analog-to-Digital": "ADC"}')
 
-        self.param_template = PartParameterTemplate.objects.create(name="sku_prefix")
-
-        self.cat = PartCategory.objects.create(name="Test Subcategory")
-        PartCategoryParameterTemplate.objects.create(
-            category=self.cat,
-            parameter_template=self.param_template,
-            default_value="IC-ADC",
+        self.parent_cat = PartCategory.objects.create(name="Integrated Circuits")
+        self.cat = PartCategory.objects.create(
+            name="Analog-to-Digital",
+            parent=self.parent_cat,
         )
-
-        self.cat_no_param = PartCategory.objects.create(name="Unconfigured Category")
+        self.cat_no_mapping = PartCategory.objects.create(
+            name="Unmapped Subcategory",
+            parent=self.parent_cat,
+        )
 
     def tearDown(self):
         teardown_func()
 
-    def test_generates_correct_ipn_from_category_parameter(self):
-        """Category with sku_prefix parameter produces correct IPN"""
+    def test_generates_correct_ipn_from_pathstring(self):
+        """Category with mapped pathstring produces correct IPN"""
         p = Part.objects.create(category=self.cat, name="TestPart")
         part = Part.objects.get(pk=p.pk)
         self.assertEqual(part.IPN, "IC-ADC-0001")
@@ -424,9 +424,15 @@ class IPNGeneratorCategoryAwareTests(TestCase):
         part = Part.objects.get(pk=p.pk)
         self.assertEqual(part.IPN, "IC-ADC-0043")
 
-    def test_category_without_parameter_skips_ipn(self):
-        """Parts in categories without sku_prefix get no IPN assigned"""
-        p = Part.objects.create(category=self.cat_no_param, name="TestPart")
+    def test_unmapped_subcategory_skips_ipn(self):
+        """Parts in categories not in the mapping get no IPN assigned"""
+        p = Part.objects.create(category=self.cat_no_mapping, name="TestPart")
+        part = Part.objects.get(pk=p.pk)
+        self.assertFalse(part.IPN)
+
+    def test_top_level_category_skips_ipn(self):
+        """Parts assigned directly to a top-level category (no parent) get no IPN"""
+        p = Part.objects.create(category=self.parent_cat, name="TestPart")
         part = Part.objects.get(pk=p.pk)
         self.assertFalse(part.IPN)
 
