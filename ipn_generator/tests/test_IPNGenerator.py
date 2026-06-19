@@ -388,14 +388,15 @@ class IPNGeneratorCategoryAwareTests(TestCase):
     def setUp(self):
         setup_func(self)
         self.plugin.set_setting("CATEGORY_AWARE", True)
-        self.plugin.set_setting("PRIMARY_MAPPING", '{"Integrated Circuits": "IC"}')
-        self.plugin.set_setting("SECONDARY_MAPPING", '{"Analog-to-Digital": "ADC"}')
+        self.plugin.set_setting("METADATA_KEY", "sku_code")
 
         self.parent_cat = PartCategory.objects.create(name="Integrated Circuits")
+        self.parent_cat.set_metadata("sku_code", "IC")
         self.cat = PartCategory.objects.create(
             name="Analog-to-Digital",
             parent=self.parent_cat,
         )
+        self.cat.set_metadata("sku_code", "ADC")
         self.cat_no_mapping = PartCategory.objects.create(
             name="Unmapped Subcategory",
             parent=self.parent_cat,

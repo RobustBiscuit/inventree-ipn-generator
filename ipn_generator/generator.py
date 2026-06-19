@@ -4,7 +4,6 @@ from part.models import Part
 
 from django.core.exceptions import ValidationError
 
-import json
 import logging
 import re
 
@@ -12,20 +11,10 @@ logger = logging.getLogger("inventree")
 
 PERMITTED_SPECIAL_LITERALS = "\-.:/\\"
 
-# Illustrative examples only — replace with your own mappings via the plugin settings UI:
-# Settings → Plugins → IPN Generator → Primary / Secondary Category Mapping.
-_DEFAULT_PRIMARY_MAPPING = json.dumps({
-    "Resistors": "RES",
-    "Capacitors": "CAP",
-    "Integrated Circuits": "IC",
-})
-
-_DEFAULT_SECONDARY_MAPPING = json.dumps({
-    "Surface Mount": "SMD",
-    "Through Hole": "THL",
-    "0402": "0402",
-    "Analog-to-Digital": "ADC",
-})
+# Default key under which each PartCategory stores its SKU code in the
+# category's `metadata` field (e.g. {"sku_code": "RES"}). Configurable via
+# the METADATA_KEY plugin setting.
+_DEFAULT_METADATA_KEY = "sku_code"
 
 
 def validate_pattern(pattern):
@@ -74,19 +63,14 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
         },
         "CATEGORY_AWARE": {
             "name": "Category Aware",
-            "description": "Generate IPN from the part's category path. If disabled, falls back to the PATTERN setting.",
+            "description": "Generate IPN from the part's category hierarchy. If disabled, falls back to the PATTERN setting.",
             "validator": bool,
             "default": True,
         },
-        "PRIMARY_MAPPING": {
-            "name": "Primary Category Mapping",
-            "description": "JSON mapping of top-level category names to SKU codes, e.g. {\"Antennas\": \"ANT\"}",
-            "default": _DEFAULT_PRIMARY_MAPPING,
-        },
-        "SECONDARY_MAPPING": {
-            "name": "Secondary Category Mapping",
-            "description": "JSON mapping of sub-category names to SKU codes, e.g. {\"Surface Mount\": \"SMD\"}",
-            "default": _DEFAULT_SECONDARY_MAPPING,
+        "METADATA_KEY": {
+            "name": "Category SKU Code Key",
+            "description": "The metadata key on each PartCategory that holds its SKU code, e.g. 'sku_code'.",
+            "default": _DEFAULT_METADATA_KEY,
         },
         "PATTERN": {
             "name": "IPN pattern",
@@ -132,50 +116,54 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
 
         return False
 
-    def _get_sku_prefix(self, part):
-        """Derive the SKU prefix from the part's category pathstring and the configured mappings.
+    def _get_category_code(self, category):
+        """Return the SKU code stored in a category's metadata, or None if unset."""
+        if category is None:
+            return None
+        key = self.get_setting("METADATA_KEY") or _DEFAULT_METADATA_KEY
+        code = category.get_metadata(key)
+        if not code:
+            return None
+        return str(code).strip()
 
-        Reads part.category.pathstring (e.g. 'Antennas/Surface Mount'), splits it into
-        primary and secondary names, and looks each up in the JSON mapping settings.
-        Returns the prefix string (e.g. 'ANT-SMD') or None if the category is unmapped.
+    def _get_sku_prefix(self, part):
+        """Derive the SKU prefix from the part's category hierarchy.
+
+        Reads the SKU code stored in the metadata of the part's category (secondary)
+        and its parent category (primary), e.g. 'RES' + '0402' -> 'RES-0402'.
+        Returns the prefix string or None if the category hierarchy is incomplete
+        or either code is missing.
         """
         if not part.category:
             logger.warning("IPN Generator: Part has no category; skipping IPN generation")
             return None
 
-        pathstring = part.category.pathstring or ""
-        path_parts = [p.strip() for p in pathstring.split("/")]
+        secondary_cat = part.category
+        primary_cat = part.category.parent
 
-        if len(path_parts) < 2:
+        if primary_cat is None:
             logger.warning(
-                f"IPN Generator: Category '{pathstring}' is a top-level category with no parent; "
-                "skipping IPN generation."
+                f"IPN Generator: Category '{secondary_cat.pathstring}' is a top-level category "
+                "with no parent; skipping IPN generation."
             )
             return None
 
-        primary_name, secondary_name = path_parts[0], path_parts[1]
+        primary_code = self._get_category_code(primary_cat)
+        secondary_code = self._get_category_code(secondary_cat)
 
-        try:
-            primary_map = json.loads(self.get_setting("PRIMARY_MAPPING") or "{}")
-            secondary_map = json.loads(self.get_setting("SECONDARY_MAPPING") or "{}")
-        except json.JSONDecodeError as e:
-            logger.warning(f"IPN Generator: Invalid JSON in mapping settings: {e}")
-            return None
-
-        primary_code = primary_map.get(primary_name)
-        secondary_code = secondary_map.get(secondary_name)
+        key = self.get_setting("METADATA_KEY") or _DEFAULT_METADATA_KEY
 
         if not primary_code:
             logger.warning(
-                f"IPN Generator: No code found for primary category '{primary_name}'; "
-                "add it to the PRIMARY_MAPPING setting."
+                f"IPN Generator: Category '{primary_cat.pathstring}' has no '{key}' metadata; "
+                "set it to enable IPN generation."
             )
             return None
 
         if not secondary_code:
             logger.warning(
-                f"IPN Generator: No code found for sub-category '{secondary_name}'; "
-                "add it to the SECONDARY_MAPPING setting."
+                f"IPN Generator: Category '{secondary_cat.pathstring}' has no '{key}' metadata; "
+                "set it to enable IPN generation."
             )
             return None
 

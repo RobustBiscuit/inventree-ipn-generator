@@ -23,8 +23,43 @@ This setting is located with the Plugin Settings on the settings page.
 - On Create - If on, the plugin will assign IPNs to newly created parts
 - On Change - If on, the plugin will assign IPNs to parts after a change has been made.
 Enabling this setting will remove the ability to have parts without IPNs.
+- Category Aware - If on, IPNs are built from the part's category hierarchy (see below). If off, the Pattern setting is used instead.
+- Category SKU Code Key - The metadata key on each category that holds its SKU code (default `sku_code`).
 
-## Pattern
+## Category-Aware SKU Generation
+
+When **Category Aware** is enabled, the plugin builds an IPN of the form:
+
+```
+{PRIMARY_CODE}-{SECONDARY_CODE}-{SEQUENCE}     e.g.  RES-0402-0001
+```
+
+The codes are read from each category's **metadata**, not from a central mapping.
+Store a short `sku_code` on each category:
+
+- The part's category (the sub-category) provides the **secondary** code.
+- Its parent category provides the **primary** code.
+
+For example, a part in `Resistors / 0402` where `Resistors` has `sku_code = "RES"`
+and `0402` has `sku_code = "0402"` receives `RES-0402-0001`, then `RES-0402-0002`, etc.
+
+If either category is missing its `sku_code`, or the part sits in a top-level
+category with no parent, the plugin logs a warning and leaves the IPN blank so
+you can set it manually.
+
+### Setting category codes
+
+You can set the `sku_code` metadata on individual categories via the InvenTree
+API or admin. To bulk-populate many categories at once, edit and run the helper
+script in [`tools/set_category_codes.py`](tools/set_category_codes.py):
+
+```
+python tools/set_category_codes.py --url https://your-inventree --token YOUR_TOKEN --dry-run
+```
+
+Drop `--dry-run` to apply.
+
+## Pattern (legacy / non-category mode)
 Part Number patterns follow three basic groups. Literals, Numerics, and characters.
 When incrementing a part number, the rightmost group that is mutable will be incremented.
 All groups can be combined in any order.
