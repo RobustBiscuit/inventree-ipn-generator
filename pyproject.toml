@@ -4,10 +4,13 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = "inventree-ipn-generator"
-version = "0.1.2"
-description = "InvenTree plugin to automatically generate and assign Internal Part Numbers to parts"
+version = "0.2.0"
+description = "InvenTree plugin that automatically generates and assigns Internal Part Numbers to parts, with optional category-aware SKU generation from the part's category hierarchy"
 authors = [
     {name = "Nichlas Walsøe", email = "lavissawow@gmail.com"}
+]
+maintainers = [
+    {name = "Irshaad", email = "irshaad@plentify.co.za"}
 ]
 readme = {file = "README.md", content-type = "text/markdown"}
 license = {file = "LICENSE"}
@@ -20,7 +23,7 @@ classifiers = [
 requires-python = ">=3.9"
 
 [project.urls]
-"Homepage" = "https://github.com/LavissaWoW/inventree-ipn-generator"
+"Homepage" = "https://github.com/RobustBiscuit/inventree-ipn-generator"
 
 [project.entry-points."inventree_plugins"]
 IPNGenerator = 'ipn_generator.generator:AutoGenIPNPlugin'

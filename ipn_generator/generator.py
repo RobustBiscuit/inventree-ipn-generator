@@ -42,11 +42,12 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
 
     AUTHOR = "Nichlas W."
     DESCRIPTION = (
-        "Plugin for automatically assigning IPN to parts created with empty IPN fields.\
-        IPN pattern syntax can be found on the website linked here."
+        "Plugin for automatically assigning IPNs to parts created with empty IPN fields. "
+        "Supports category-aware SKU generation from the part's category hierarchy, "
+        "or pattern-based generation. See the website for syntax."
     )
-    VERSION = "0.1"
-    WEBSITE = "https://github.com/LavissaWoW/inventree-ipn-generator"
+    VERSION = "0.2.0"
+    WEBSITE = "https://github.com/RobustBiscuit/inventree-ipn-generator"
 
     NAME = "IPNGenerator"
     SLUG = "ipngen"
