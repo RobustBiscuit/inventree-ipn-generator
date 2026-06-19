@@ -12,114 +12,19 @@ logger = logging.getLogger("inventree")
 
 PERMITTED_SPECIAL_LITERALS = "\-.:/\\"
 
-# Default category-to-code mappings (name → code).
-# Stored as JSON strings so they can be overridden via plugin settings in the UI.
-# Where the original mapping had multiple codes pointing to the same category name
-# (e.g. LDR/LED/PHO all → "Optoelectronics"), only one is kept here as default;
-# edit the PRIMARY_MAPPING setting in InvenTree to add or change entries.
+# Illustrative examples only — replace with your own mappings via the plugin settings UI:
+# Settings → Plugins → IPN Generator → Primary / Secondary Category Mapping.
 _DEFAULT_PRIMARY_MAPPING = json.dumps({
-    "Antennas": "ANT",
-    "Batteries": "BAT",
-    "Capacitors": "CAP",
-    "Connectors": "CON",
-    "Diodes": "DIO",
-    "Displays": "DIS",
-    "Electromechanical": "ELM",
-    "Fuses & Protection": "FUS",
-    "Integrated Circuits": "IC",
-    "Inductors": "IND",
-    "Optoelectronics": "LED",
-    "Mechanical & Hardware": "MEC",
-    "Modules": "MOD",
-    "Oscillators": "OSC",
-    "PCBs & Pins": "PCB",
-    "Power Supply": "PWR",
     "Resistors": "RES",
-    "RF & Wireless": "RF",
-    "Sensors": "SEN",
-    "Transistors": "TRA",
-    "Wires & Cables": "WRE",
+    "Capacitors": "CAP",
+    "Integrated Circuits": "IC",
 })
 
 _DEFAULT_SECONDARY_MAPPING = json.dumps({
-    "Through Hole": "THL",
-    "Wire & Cable": "WRE",
     "Surface Mount": "SMD",
-    "Lithium-Ion": "LIIO",
-    "Lithium-Polymer": "LIPO",
-    "Sealed Lead Acid": "SLA",
-    "Kits": "KIT",
-    "Polarized": "POL",
-    "Safety Film": "SFT",
-    "Tantalum": "TAN",
-    "Battery": "BAT",
-    "Panel Mount": "PNL",
-    "Flow Switches": "FLW",
-    "Navigation Switches": "NAV",
-    "Pushbuttons": "PBT",
-    "Potentiometers": "POT",
-    "Rotary Switches": "RSW",
-    "Slide Switches": "SLD",
-    "Valves": "VAL",
+    "Through Hole": "THL",
+    "0402": "0402",
     "Analog-to-Digital": "ADC",
-    "Amplifiers": "AMP",
-    "Battery Chargers": "CHG",
-    "Communications": "COM",
-    "Current Regulators": "CRR",
-    "Digital-to-Analog": "DAC",
-    "Drivers": "DRV",
-    "EEPROM": "EEP",
-    "I/O Expanders": "EXP",
-    "Flash Memory": "FSH",
-    "Inertial Measurement Units": "IMU",
-    "Inverters & Logic": "INV",
-    "Isolators": "ISO",
-    "Magnetic & Hall Effect": "MAG",
-    "Microcontrollers": "MPU",
-    "Multiplexers": "MUX",
-    "NOR Flash": "NOR",
-    "Optocouplers": "OPT",
-    "SRAM": "RAM",
-    "Voltage References": "REF",
-    "SIM Controllers": "SIM",
-    "Switching Controllers": "SWC",
-    "Timers": "TMR",
-    "USB Controllers": "USC",
-    "Enclosures": "BOX",
-    "Electrical Fittings": "ELC",
-    "Fasteners": "FST",
-    "Heatsinks": "HSK",
-    "Waterproofing": "WTP",
-    "Compute Modules": "CMP",
-    "Measurement Modules": "MES",
-    "Solid State Drives": "SSD",
-    "Breakout Boards": "BRKO",
-    "Control Boards": "CTL",
-    "Guide Pins": "GID",
-    "Test Points": "TST",
-    "AC-DC Supplies": "ACD",
-    "DC-DC Converters": "DCD",
-    "Power Relays": "REL",
-    "Transformers": "TRA",
-    "Linear Regulators": "LIN",
-    "Shunt Regulators": "SHU",
-    "Switching Regulators": "SWI",
-    "433MHz": "433",
-    "802.11 & 802.15.4": "802",
-    "Attenuators": "ATN",
-    "Cellular": "GSM",
-    "Mesh Networks": "MSH",
-    "Receivers": "RX",
-    "Transmitters": "TX",
-    "WiFi Modules": "WFI",
-    "Absolute Pressure": "APS",
-    "Environmental": "ENV",
-    "Proximity": "PRX",
-    "Ribbon Cables": "RBN",
-    "Shielded Cables": "SHL",
-    "Heat Shrink": "SHR",
-    "Twisted Pair": "TWS",
-    "Thermistors": "NTC",
 })
 
 
@@ -193,6 +98,24 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
     min_pattern_char = ord("A")
     max_pattern_char = ord("Z")
     skip_chars = range(ord("["), ord("a"))
+
+    def plugin_ready(self):
+        """Write default values to the DB for any settings that have no record yet.
+
+        InvenTree's settings UI only renders settings that have a DB record.
+        Without this, freshly installed plugins show blank fields for settings
+        that have large defaults (like the JSON mapping strings).
+        """
+        from plugin.models import PluginSetting
+
+        for key, config in self.SETTINGS.items():
+            if "default" not in config:
+                continue
+            exists = PluginSetting.objects.filter(
+                plugin=self.plugin_config(), key=key
+            ).exists()
+            if not exists:
+                self.set_setting(key, config["default"])
 
     def wants_process_event(self, event):
         """Lets InvenTree know what events to listen for."""
