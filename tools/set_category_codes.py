@@ -22,7 +22,39 @@ Get your API token from InvenTree: Settings -> Account -> API Tokens
 """
 
 import argparse
+import time
 import requests
+
+# HTTP statuses worth retrying — transient server / gateway errors.
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def request_with_retry(method, url, headers, *, json=None, retries=5, backoff=1.5):
+    """Issue a request, retrying transient 5xx/429 errors with exponential backoff."""
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            resp = requests.request(method, url, headers=headers, json=json, timeout=30)
+            if resp.status_code in _RETRY_STATUSES:
+                raise requests.exceptions.HTTPError(
+                    f"{resp.status_code} transient error", response=resp
+                )
+            resp.raise_for_status()
+            return resp
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.HTTPError) as exc:
+            status = getattr(exc.response, "status_code", None)
+            # Don't retry genuine client errors (4xx other than 429).
+            if status is not None and status not in _RETRY_STATUSES:
+                raise
+            last_exc = exc
+            if attempt < retries - 1:
+                wait = backoff ** attempt
+                print(f"  ! transient error ({status or type(exc).__name__}); "
+                      f"retry {attempt + 1}/{retries - 1} in {wait:.1f}s")
+                time.sleep(wait)
+    raise last_exc
 
 # Category name -> SKU code. Both top-level (primary) and sub-category
 # (secondary) names live in one flat dict; each category stores only its own
@@ -155,8 +187,7 @@ def get_all_categories(base_url, headers):
     categories = []
     url = f"{base_url}/api/part/category/?limit=100&offset=0"
     while url:
-        resp = requests.get(url, headers=headers)
-        resp.raise_for_status()
+        resp = request_with_retry("GET", url, headers)
         data = resp.json()
         categories.extend(data["results"])
         url = data.get("next")
@@ -165,8 +196,7 @@ def get_all_categories(base_url, headers):
 
 def get_metadata(base_url, headers, category_id):
     url = f"{base_url}/api/metadata/partcategory/pk/{category_id}/"
-    resp = requests.get(url, headers=headers)
-    resp.raise_for_status()
+    resp = request_with_retry("GET", url, headers)
     return resp.json().get("metadata") or {}
 
 
@@ -175,8 +205,7 @@ def set_metadata(base_url, headers, category_id, metadata, dry_run):
     if dry_run:
         print(f"  [DRY RUN] PATCH {url}  metadata={metadata}")
         return
-    resp = requests.patch(url, json={"metadata": metadata}, headers=headers)
-    resp.raise_for_status()
+    request_with_retry("PATCH", url, headers, json={"metadata": metadata})
 
 
 def main():
@@ -184,6 +213,8 @@ def main():
     parser.add_argument("--url", required=True, help="InvenTree base URL (no trailing slash)")
     parser.add_argument("--token", required=True, help="InvenTree API token")
     parser.add_argument("--key", default="sku_code", help="Metadata key to write (default: sku_code)")
+    parser.add_argument("--delay", type=float, default=0.1,
+                        help="Seconds to pause between writes, to ease server load (default: 0.1)")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without applying them")
     args = parser.parse_args()
 
@@ -202,13 +233,20 @@ def main():
             skipped.append(f"  {cat['pathstring']}")
             continue
 
-        # Merge into existing metadata so we don't clobber other keys.
+        # Merge into existing metadata so we don't clobber other keys. Skip the
+        # write if the code is already set (makes re-runs cheap and idempotent).
         existing = {} if args.dry_run else get_metadata(args.url, headers, cat["pk"])
+        if not args.dry_run and existing.get(args.key) == code:
+            updated.append(f"  {cat['pathstring']} -> {code} (already set)")
+            continue
         existing[args.key] = code
 
         print(f"Setting {cat['pathstring']} -> {args.key}={code}")
         set_metadata(args.url, headers, cat["pk"], existing, args.dry_run)
         updated.append(f"  {cat['pathstring']} -> {code}")
+
+        if not args.dry_run and args.delay:
+            time.sleep(args.delay)
 
     print(f"\n{'[DRY RUN] ' if args.dry_run else ''}Updated {len(updated)} categories.")
 
