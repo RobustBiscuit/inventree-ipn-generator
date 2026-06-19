@@ -133,10 +133,21 @@ CATEGORY_CODES = {
     "0402": "0402",
     "0603": "0603",
     "0805": "0805",
+    "1008": "1008",
     "1206": "1206",
     "1210": "1210",
+    "1812": "1812",
     "2010": "2010",
+    "2220": "2220",
     "2512": "2512",
+    "4122": "4122",
+    # Sub-categories whose name is already the SKU code
+    "LED": "LED",
+    "MIC": "MIC",
+    "PWR": "PWR",
+    "PCB": "PCB",
+    "LPH": "LPH",
+    "LPS": "LPS",
 }
 
 
@@ -153,14 +164,14 @@ def get_all_categories(base_url, headers):
 
 
 def get_metadata(base_url, headers, category_id):
-    url = f"{base_url}/api/part/category/{category_id}/metadata/"
+    url = f"{base_url}/api/metadata/partcategory/pk/{category_id}/"
     resp = requests.get(url, headers=headers)
     resp.raise_for_status()
     return resp.json().get("metadata") or {}
 
 
 def set_metadata(base_url, headers, category_id, metadata, dry_run):
-    url = f"{base_url}/api/part/category/{category_id}/metadata/"
+    url = f"{base_url}/api/metadata/partcategory/pk/{category_id}/"
     if dry_run:
         print(f"  [DRY RUN] PATCH {url}  metadata={metadata}")
         return
