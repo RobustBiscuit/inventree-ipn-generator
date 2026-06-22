@@ -35,7 +35,7 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
         "Supports category-aware IPN generation from the part's category hierarchy, "
         "or pattern-based generation. See the website for syntax."
     )
-    VERSION = "0.3.0"
+    VERSION = "0.4.0"
     WEBSITE = "https://github.com/RobustBiscuit/inventree-ipn-generator"
 
     NAME = "IPNGenerator"
@@ -71,6 +71,12 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
             "name": "Category IPN Code Key",
             "description": "The metadata key on each PartCategory that holds its IPN code, e.g. 'ipn_code'.",
             "default": _DEFAULT_METADATA_KEY,
+        },
+        "NOTIFY_ON_ALLOCATION": {
+            "name": "Notify on Allocation",
+            "description": "Send an in-app notification to all active users when an IPN is allocated.",
+            "validator": bool,
+            "default": True,
         },
         "PATTERN": {
             "name": "IPN pattern",
@@ -117,14 +123,45 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
         return False
 
     def _assign_ipn(self, part, ipn):
-        """Single chokepoint for assigning an IPN: set, persist, and log.
-
-        Centralising assignment here keeps a future notification feature simple —
-        it can emit an "IPN allocated" notification from this one place.
-        """
+        """Single chokepoint for assigning an IPN: set, persist, log, and notify."""
         part.IPN = ipn
         part.save()
         logger.info("IPN Generator: assigned IPN '%s' to part %s", ipn, part.pk)
+        self._notify_allocation(part, ipn)
+
+    def _notify_allocation(self, part, ipn):
+        """Notify all active users (in-app tray) that an IPN was allocated.
+
+        Best-effort: any failure here is logged and swallowed so it never undoes the
+        already-saved IPN assignment.
+        """
+        if not self.get_setting("NOTIFY_ON_ALLOCATION"):
+            return
+
+        try:
+            import common.notifications
+            from django.contrib.auth import get_user_model
+
+            # Notify every active user, regardless of permissions or subscription.
+            targets = list(get_user_model().objects.filter(is_active=True))
+            if not targets:
+                return
+
+            common.notifications.trigger_notification(
+                part,
+                "ipngen.ipn_allocated",
+                targets=targets,
+                context={
+                    "name": "IPN allocated",
+                    "message": f"IPN {ipn} was allocated to part '{part.name}'.",
+                },
+                # Deliver to the in-app notification tray only.
+                delivery_methods={"inventree-ui-notification"},
+            )
+        except Exception as exc:
+            logger.warning(
+                "IPN Generator: failed to send allocation notification for '%s': %s", ipn, exc
+            )
 
     def _wildcard_prefix(self, ipn):
         """Return the literal prefix from a wildcard IPN.

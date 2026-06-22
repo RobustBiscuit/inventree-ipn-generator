@@ -1,5 +1,7 @@
 from django.test import TestCase
 from django.core.exceptions import ValidationError
+from django.contrib.auth import get_user_model
+from unittest import mock
 import logging
 
 from django.conf import settings
@@ -534,6 +536,52 @@ class IPNGeneratorWildcardTests(TestCase):
         """A normal, already-set IPN is not altered by the wildcard branch"""
         p = Part.objects.create(category=self.cat, name="W8", IPN="MANUAL-001")
         self.assertEqual(Part.objects.get(pk=p.pk).IPN, "MANUAL-001")
+
+
+class IPNGeneratorNotificationTests(TestCase):
+    """Verify the in-app notification fired when an IPN is allocated."""
+
+    def setUp(self):
+        setup_func(self)
+        self.plugin.set_setting("CATEGORY_AWARE", True)
+        self.plugin.set_setting("METADATA_KEY", "ipn_code")
+        self.plugin.set_setting("NOTIFY_ON_ALLOCATION", True)
+        self.parent_cat = PartCategory.objects.create(name="Integrated Circuits")
+        self.parent_cat.set_metadata("ipn_code", "IC")
+        self.cat = PartCategory.objects.create(name="Analog-to-Digital", parent=self.parent_cat)
+        self.cat.set_metadata("ipn_code", "ADC")
+
+    def tearDown(self):
+        teardown_func()
+
+    def test_notification_sent_to_all_active_users(self):
+        """An allocation triggers a single tray notification targeting all active users"""
+        user = get_user_model().objects.create_user(username="notify-me", password="x")
+
+        with mock.patch("common.notifications.trigger_notification") as mock_trigger:
+            Part.objects.create(category=self.cat, name="N1")
+
+        self.assertEqual(mock_trigger.call_count, 1)
+        args, kwargs = mock_trigger.call_args
+        self.assertEqual(args[1], "ipngen.ipn_allocated")
+        self.assertIn("IC-ADC-0001", kwargs["context"]["message"])
+        self.assertEqual(kwargs["delivery_methods"], {"inventree-ui-notification"})
+        self.assertIn(user, kwargs["targets"])
+
+    def test_notification_respects_toggle(self):
+        """No notification is sent when NOTIFY_ON_ALLOCATION is off"""
+        self.plugin.set_setting("NOTIFY_ON_ALLOCATION", False)
+        with mock.patch("common.notifications.trigger_notification") as mock_trigger:
+            Part.objects.create(category=self.cat, name="N2")
+        self.assertFalse(mock_trigger.called)
+
+    def test_assignment_survives_notification_error(self):
+        """A notification failure must not undo the IPN assignment"""
+        with mock.patch(
+            "common.notifications.trigger_notification", side_effect=Exception("boom")
+        ):
+            p = Part.objects.create(category=self.cat, name="N3")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "IC-ADC-0001")
 
 
 class IPNGeneratorModelTests(TestCase):

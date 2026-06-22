@@ -25,6 +25,7 @@ This setting is located with the Plugin Settings on the settings page.
 Enabling this setting will remove the ability to have parts without IPNs.
 - Category Aware - If on, IPNs are built from the part's category hierarchy (see below). If off, the Pattern setting is used instead.
 - Category IPN Code Key - The metadata key on each category that holds its IPN code (default `ipn_code`).
+- Notify on Allocation - If on, an in-app notification is sent to all active users each time an IPN is allocated (see below).
 
 ## Category-Aware IPN Generation
 
@@ -76,6 +77,16 @@ trailing `-`) is used as the literal prefix.
 > **Note:** Setting a wildcard on a **newly created** part works out of the box.
 > To use it on an **existing** part you must enable the *On Change* setting, since
 > the plugin only re-processes saved parts when that is on.
+
+## Allocation Notifications
+
+When **Notify on Allocation** is enabled (default), the plugin posts an in-app
+notification to the InvenTree notification tray every time it assigns an IPN —
+whether via category-aware, wildcard, or pattern generation. The message reads,
+for example: *"IPN RES-0402-0001 was allocated to part 'My Part'."*
+
+The notification is sent to **all active users**, regardless of permissions or
+subscriptions. It is delivered to the in-app tray only (not email).
 
 ## Pattern (legacy / non-category mode)
 Part Number patterns follow three basic groups. Literals, Numerics, and characters.
