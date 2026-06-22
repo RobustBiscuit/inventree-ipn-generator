@@ -388,15 +388,15 @@ class IPNGeneratorCategoryAwareTests(TestCase):
     def setUp(self):
         setup_func(self)
         self.plugin.set_setting("CATEGORY_AWARE", True)
-        self.plugin.set_setting("METADATA_KEY", "sku_code")
+        self.plugin.set_setting("METADATA_KEY", "ipn_code")
 
         self.parent_cat = PartCategory.objects.create(name="Integrated Circuits")
-        self.parent_cat.set_metadata("sku_code", "IC")
+        self.parent_cat.set_metadata("ipn_code", "IC")
         self.cat = PartCategory.objects.create(
             name="Analog-to-Digital",
             parent=self.parent_cat,
         )
-        self.cat.set_metadata("sku_code", "ADC")
+        self.cat.set_metadata("ipn_code", "ADC")
         self.cat_no_mapping = PartCategory.objects.create(
             name="Unmapped Subcategory",
             parent=self.parent_cat,
@@ -451,6 +451,89 @@ class IPNGeneratorCategoryAwareTests(TestCase):
         p = Part.objects.create(category=self.cat, name="TestPart")
         part = Part.objects.get(pk=p.pk)
         self.assertEqual(part.IPN, "0001")
+
+
+class IPNGeneratorDefaultKeyTests(TestCase):
+    """Locks the default metadata key (ipn_code) used when METADATA_KEY is unset."""
+
+    def setUp(self):
+        setup_func(self)
+        self.plugin.set_setting("CATEGORY_AWARE", True)
+        # Intentionally do NOT set METADATA_KEY — rely on the plugin's default.
+        self.parent_cat = PartCategory.objects.create(name="Defaults Parent")
+        self.parent_cat.set_metadata("ipn_code", "DEF")
+        self.cat = PartCategory.objects.create(name="Defaults Child", parent=self.parent_cat)
+        self.cat.set_metadata("ipn_code", "CHD")
+
+    def tearDown(self):
+        teardown_func()
+
+    def test_default_metadata_key_is_ipn_code(self):
+        """With no METADATA_KEY set, codes stored under 'ipn_code' are used"""
+        p = Part.objects.create(category=self.cat, name="TestPart")
+        part = Part.objects.get(pk=p.pk)
+        self.assertEqual(part.IPN, "DEF-CHD-0001")
+
+
+class IPNGeneratorWildcardTests(TestCase):
+    """Wildcard auto-complete: an IPN like 'CAP-0402-*' is filled with the next sequence."""
+
+    def setUp(self):
+        setup_func(self)
+        # On Change lets the re-fired save event be processed too (recursion-safety path).
+        self.plugin.set_setting("ON_CHANGE", True)
+        self.plugin.set_setting("CATEGORY_AWARE", True)
+        self.plugin.set_setting("METADATA_KEY", "ipn_code")
+        # A category that WOULD yield IC-ADC-... so we can prove the wildcard overrides it.
+        self.parent_cat = PartCategory.objects.create(name="Integrated Circuits")
+        self.parent_cat.set_metadata("ipn_code", "IC")
+        self.cat = PartCategory.objects.create(name="Analog-to-Digital", parent=self.parent_cat)
+        self.cat.set_metadata("ipn_code", "ADC")
+
+    def tearDown(self):
+        teardown_func()
+
+    def test_wildcard_assigns_first_sequential(self):
+        """A wildcard with no existing matches starts at 0001"""
+        p = Part.objects.create(category=self.cat, name="W1", IPN="CAP-0402-*")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "CAP-0402-0001")
+
+    def test_wildcard_increments(self):
+        """A wildcard continues from the highest existing sequence for that prefix"""
+        Part.objects.create(category=self.cat, name="Existing", IPN="CAP-0402-0007")
+        p = Part.objects.create(category=self.cat, name="W2", IPN="CAP-0402-*")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "CAP-0402-0008")
+
+    def test_wildcard_overrides_category_aware(self):
+        """The wildcard wins even though the category would produce IC-ADC-..."""
+        p = Part.objects.create(category=self.cat, name="W3", IPN="CAP-0402-*")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "CAP-0402-0001")
+
+    def test_wildcard_works_with_category_aware_false(self):
+        """Wildcards work regardless of the CATEGORY_AWARE setting"""
+        self.plugin.set_setting("CATEGORY_AWARE", False)
+        p = Part.objects.create(category=self.cat, name="W4", IPN="CAP-0402-*")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "CAP-0402-0001")
+
+    def test_wildcard_star_not_at_end(self):
+        """Only the text before the first '*' is used as the prefix"""
+        p = Part.objects.create(category=self.cat, name="W5", IPN="CAP-*-0402")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "CAP-0001")
+
+    def test_wildcard_multiple_stars(self):
+        """Splitting on the first '*' handles multiple wildcards"""
+        p = Part.objects.create(category=self.cat, name="W6", IPN="CAP-*-*")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "CAP-0001")
+
+    def test_wildcard_no_prefix_left_unchanged(self):
+        """A wildcard with no usable prefix is left as-is (warning logged)"""
+        p = Part.objects.create(category=self.cat, name="W7", IPN="*")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "*")
+
+    def test_non_wildcard_existing_ipn_untouched(self):
+        """A normal, already-set IPN is not altered by the wildcard branch"""
+        p = Part.objects.create(category=self.cat, name="W8", IPN="MANUAL-001")
+        self.assertEqual(Part.objects.get(pk=p.pk).IPN, "MANUAL-001")
 
 
 class IPNGeneratorModelTests(TestCase):

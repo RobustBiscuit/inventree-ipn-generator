@@ -11,10 +11,10 @@ logger = logging.getLogger("inventree")
 
 PERMITTED_SPECIAL_LITERALS = "\-.:/\\"
 
-# Default key under which each PartCategory stores its SKU code in the
-# category's `metadata` field (e.g. {"sku_code": "RES"}). Configurable via
+# Default key under which each PartCategory stores its IPN code in the
+# category's `metadata` field (e.g. {"ipn_code": "RES"}). Configurable via
 # the METADATA_KEY plugin setting.
-_DEFAULT_METADATA_KEY = "sku_code"
+_DEFAULT_METADATA_KEY = "ipn_code"
 
 
 def validate_pattern(pattern):
@@ -32,10 +32,10 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
     AUTHOR = "Nichlas W."
     DESCRIPTION = (
         "Plugin for automatically assigning IPNs to parts created with empty IPN fields. "
-        "Supports category-aware SKU generation from the part's category hierarchy, "
+        "Supports category-aware IPN generation from the part's category hierarchy, "
         "or pattern-based generation. See the website for syntax."
     )
-    VERSION = "0.2.0"
+    VERSION = "0.3.0"
     WEBSITE = "https://github.com/RobustBiscuit/inventree-ipn-generator"
 
     NAME = "IPNGenerator"
@@ -68,8 +68,8 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
             "default": True,
         },
         "METADATA_KEY": {
-            "name": "Category SKU Code Key",
-            "description": "The metadata key on each PartCategory that holds its SKU code, e.g. 'sku_code'.",
+            "name": "Category IPN Code Key",
+            "description": "The metadata key on each PartCategory that holds its IPN code, e.g. 'ipn_code'.",
             "default": _DEFAULT_METADATA_KEY,
         },
         "PATTERN": {
@@ -116,8 +116,26 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
 
         return False
 
+    def _assign_ipn(self, part, ipn):
+        """Single chokepoint for assigning an IPN: set, persist, and log.
+
+        Centralising assignment here keeps a future notification feature simple —
+        it can emit an "IPN allocated" notification from this one place.
+        """
+        part.IPN = ipn
+        part.save()
+        logger.info("IPN Generator: assigned IPN '%s' to part %s", ipn, part.pk)
+
+    def _wildcard_prefix(self, ipn):
+        """Return the literal prefix from a wildcard IPN.
+
+        Takes everything before the first '*' and strips a trailing '-':
+        'CAP-0402-*' -> 'CAP-0402'; 'CAP-*-0402' -> 'CAP'; '*' -> ''.
+        """
+        return ipn.split("*", 1)[0].rstrip("-")
+
     def _get_category_code(self, category):
-        """Return the SKU code stored in a category's metadata, or None if unset."""
+        """Return the IPN code stored in a category's metadata, or None if unset."""
         if category is None:
             return None
         key = self.get_setting("METADATA_KEY") or _DEFAULT_METADATA_KEY
@@ -126,10 +144,10 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
             return None
         return str(code).strip()
 
-    def _get_sku_prefix(self, part):
-        """Derive the SKU prefix from the part's category hierarchy.
+    def _get_ipn_prefix(self, part):
+        """Derive the IPN prefix from the part's category hierarchy.
 
-        Reads the SKU code stored in the metadata of the part's category (secondary)
+        Reads the IPN code stored in the metadata of the part's category (secondary)
         and its parent category (primary), e.g. 'RES' + '0402' -> 'RES-0402'.
         Returns the prefix string or None if the category hierarchy is incomplete
         or either code is missing.
@@ -170,7 +188,7 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
         return f"{primary_code}-{secondary_code}"
 
     def _find_next_sequential(self, prefix):
-        """Return the next zero-padded 4-digit sequence number for the given SKU prefix."""
+        """Return the next zero-padded 4-digit sequence number for the given IPN prefix."""
         existing = Part.objects.filter(IPN__startswith=f"{prefix}-").values_list("IPN", flat=True)
 
         max_seq = 0
@@ -199,30 +217,46 @@ class AutoGenIPNPlugin(EventMixin, SettingsMixin, InvenTreePlugin):
             logger.debug("IPN Generator: Event Model is not part")
             return
 
-        # Don't create IPNs for parts with IPNs
         part = Part.objects.get(id=id)
+
+        # Wildcard auto-complete: a user-entered IPN like "CAP-0402-*" forces the
+        # next sequential number for that literal prefix, overriding category-aware
+        # logic. Must run BEFORE the "skip parts with IPNs" guard, since the
+        # wildcard value is itself truthy.
+        if part.IPN and "*" in part.IPN:
+            prefix = self._wildcard_prefix(part.IPN)
+            if not prefix:
+                logger.warning(
+                    "IPN Generator: wildcard IPN '%s' has no usable prefix; leaving as-is",
+                    part.IPN,
+                )
+                return
+            seq = self._find_next_sequential(prefix)
+            self._assign_ipn(part, f"{prefix}-{seq}")
+            return
+
+        # Don't create IPNs for parts that already have a (non-wildcard) IPN
         if part.IPN:
             return
 
         if self.get_setting("CATEGORY_AWARE"):
-            prefix = self._get_sku_prefix(part)
+            prefix = self._get_ipn_prefix(part)
             if prefix is None:
                 return
             seq = self._find_next_sequential(prefix)
-            part.IPN = f"{prefix}-{seq}"
-            part.save()
+            self._assign_ipn(part, f"{prefix}-{seq}")
             return
 
         expression = self.construct_regex(True)
         latest = Part.objects.filter(IPN__regex=expression).order_by("-IPN").first()
 
         if not latest:
-            part.IPN = self.construct_first_ipn()
+            new_ipn = self.construct_first_ipn()
         else:
             grouped_expression = self.construct_regex()
-            part.IPN = self.increment_ipn(grouped_expression, latest.IPN)
+            new_ipn = self.increment_ipn(grouped_expression, latest.IPN)
 
-        part.save()
+        self._assign_ipn(part, new_ipn)
 
         return
 

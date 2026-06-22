@@ -1,11 +1,11 @@
 """
-One-time helper to populate the `sku_code` metadata field on InvenTree
+One-time helper to populate the `ipn_code` metadata field on InvenTree
 PartCategories, so the IPN Generator plugin (category-aware mode) can build
-SKUs from the category hierarchy.
+IPNs from the category hierarchy.
 
 Each category gets a short code stored in its metadata, e.g.:
-    Resistors            -> {"sku_code": "RES"}
-    0402                 -> {"sku_code": "0402"}
+    Resistors            -> {"ipn_code": "RES"}
+    0402                 -> {"ipn_code": "0402"}
 A part placed in Resistors/0402 then receives an IPN like "RES-0402-0001".
 
 The CATEGORY_CODES mapping below is keyed by category NAME. Edit it to match
@@ -15,8 +15,14 @@ Usage:
     python set_category_codes.py \
         --url https://your-inventree-url \
         --token YOUR_API_TOKEN \
-        [--key sku_code] \
+        [--key ipn_code] \
         [--dry-run]
+
+To strip a stale metadata key from every category (e.g. after renaming the key):
+    python set_category_codes.py \
+        --url https://your-inventree-url \
+        --token YOUR_API_TOKEN \
+        --remove-key sku_code
 
 Get your API token from InvenTree: Settings -> Account -> API Tokens
 """
@@ -56,7 +62,7 @@ def request_with_retry(method, url, headers, *, json=None, retries=5, backoff=1.
                 time.sleep(wait)
     raise last_exc
 
-# Category name -> SKU code. Both top-level (primary) and sub-category
+# Category name -> IPN code. Both top-level (primary) and sub-category
 # (secondary) names live in one flat dict; each category stores only its own
 # code. Edit freely to match your categories.
 CATEGORY_CODES = {
@@ -173,7 +179,7 @@ CATEGORY_CODES = {
     "2220": "2220",
     "2512": "2512",
     "4122": "4122",
-    # Sub-categories whose name is already the SKU code
+    # Sub-categories whose name is already the IPN code
     "LED": "LED",
     "MIC": "MIC",
     "PWR": "PWR",
@@ -208,17 +214,46 @@ def set_metadata(base_url, headers, category_id, metadata, dry_run):
     request_with_retry("PATCH", url, headers, json={"metadata": metadata})
 
 
+def remove_key(args, headers):
+    """Strip a metadata key from every category that has it."""
+    print(f"Fetching categories to remove '{args.remove_key}'...")
+    categories = get_all_categories(args.url, headers)
+
+    removed = []
+    for cat in categories:
+        existing = get_metadata(args.url, headers, cat["pk"])
+        if args.remove_key not in existing:
+            continue
+        existing.pop(args.remove_key, None)
+
+        print(f"Removing '{args.remove_key}' from {cat['pathstring']}")
+        set_metadata(args.url, headers, cat["pk"], existing, args.dry_run)
+        removed.append(f"  {cat['pathstring']}")
+
+        if not args.dry_run and args.delay:
+            time.sleep(args.delay)
+
+    print(f"\n{'[DRY RUN] ' if args.dry_run else ''}Removed '{args.remove_key}' from {len(removed)} categories.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True, help="InvenTree base URL (no trailing slash)")
     parser.add_argument("--token", required=True, help="InvenTree API token")
-    parser.add_argument("--key", default="sku_code", help="Metadata key to write (default: sku_code)")
+    parser.add_argument("--key", default="ipn_code", help="Metadata key to write (default: ipn_code)")
+    parser.add_argument("--remove-key", default=None,
+                        help="Instead of writing, strip this metadata key from every category "
+                             "(e.g. an old key after renaming).")
     parser.add_argument("--delay", type=float, default=0.1,
                         help="Seconds to pause between writes, to ease server load (default: 0.1)")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without applying them")
     args = parser.parse_args()
 
     headers = {"Authorization": f"Token {args.token}"}
+
+    if args.remove_key:
+        remove_key(args, headers)
+        return
 
     print("Fetching categories...")
     categories = get_all_categories(args.url, headers)

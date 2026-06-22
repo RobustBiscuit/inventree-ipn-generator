@@ -24,9 +24,9 @@ This setting is located with the Plugin Settings on the settings page.
 - On Change - If on, the plugin will assign IPNs to parts after a change has been made.
 Enabling this setting will remove the ability to have parts without IPNs.
 - Category Aware - If on, IPNs are built from the part's category hierarchy (see below). If off, the Pattern setting is used instead.
-- Category SKU Code Key - The metadata key on each category that holds its SKU code (default `sku_code`).
+- Category IPN Code Key - The metadata key on each category that holds its IPN code (default `ipn_code`).
 
-## Category-Aware SKU Generation
+## Category-Aware IPN Generation
 
 When **Category Aware** is enabled, the plugin builds an IPN of the form:
 
@@ -35,21 +35,21 @@ When **Category Aware** is enabled, the plugin builds an IPN of the form:
 ```
 
 The codes are read from each category's **metadata**, not from a central mapping.
-Store a short `sku_code` on each category:
+Store a short `ipn_code` on each category:
 
 - The part's category (the sub-category) provides the **secondary** code.
 - Its parent category provides the **primary** code.
 
-For example, a part in `Resistors / 0402` where `Resistors` has `sku_code = "RES"`
-and `0402` has `sku_code = "0402"` receives `RES-0402-0001`, then `RES-0402-0002`, etc.
+For example, a part in `Resistors / 0402` where `Resistors` has `ipn_code = "RES"`
+and `0402` has `ipn_code = "0402"` receives `RES-0402-0001`, then `RES-0402-0002`, etc.
 
-If either category is missing its `sku_code`, or the part sits in a top-level
+If either category is missing its `ipn_code`, or the part sits in a top-level
 category with no parent, the plugin logs a warning and leaves the IPN blank so
 you can set it manually.
 
 ### Setting category codes
 
-You can set the `sku_code` metadata on individual categories via the InvenTree
+You can set the `ipn_code` metadata on individual categories via the InvenTree
 API or admin. To bulk-populate many categories at once, edit and run the helper
 script in [`tools/set_category_codes.py`](tools/set_category_codes.py):
 
@@ -58,6 +58,24 @@ python tools/set_category_codes.py --url https://your-inventree --token YOUR_TOK
 ```
 
 Drop `--dry-run` to apply.
+
+## Wildcard Auto-complete
+
+You can force a specific IPN prefix on any part by setting its IPN to a value
+containing `*`. The plugin replaces the `*` with the next sequential number for
+that prefix, overriding category-aware generation:
+
+```
+Set IPN to "CAP-0402-*"   ->   CAP-0402-0001   (then CAP-0402-0002, ...)
+```
+
+This works whether or not Category Aware is enabled, and is handy when a part
+doesn't fit its category's mapping. Everything before the first `*` (minus a
+trailing `-`) is used as the literal prefix.
+
+> **Note:** Setting a wildcard on a **newly created** part works out of the box.
+> To use it on an **existing** part you must enable the *On Change* setting, since
+> the plugin only re-processes saved parts when that is on.
 
 ## Pattern (legacy / non-category mode)
 Part Number patterns follow three basic groups. Literals, Numerics, and characters.
